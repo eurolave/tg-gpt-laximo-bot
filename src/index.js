@@ -1,43 +1,45 @@
 import 'dotenv/config';
 import { Telegraf } from 'telegraf';
 import OpenAI from 'openai';
-import { normalizeInput } from './utils.js';
-import { partByOEM } from './clients/laximo.js';
+import { handleUserText, handleCallback, startFlow } from '../core/orchestrator.js';
+import { mainMenu, backMenu } from './keyboards.js';
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-bot.start((ctx) => ctx.reply('Привет! Я GPT-бот. Напишите вопрос или отправьте OEM/VIN.'));
+bot.start(async (ctx) => {
+  await ctx.reply('Привет! Выберите, что нужно:', mainMenu());
+});
 
+// Команды
+bot.command('menu', (ctx) => ctx.reply('Главное меню:', mainMenu()));
+bot.command('vin', startFlow('vin_flow'));
+bot.command('oem', startFlow('oem_flow'));
+bot.command('help', (ctx) => ctx.reply('Я помогу подобрать детали по VIN/OEM и отвечу на вопросы GPT.', backMenu()));
+
+// Reply-меню
+bot.hears('🔎 Подбор по VIN', startFlow('vin_flow'));
+bot.hears('🧩 Поиск по OEM', startFlow('oem_flow'));
+bot.hears('🤖 Вопрос к GPT', (ctx) => ctx.reply('Напишите вопрос для GPT:', backMenu()));
+bot.hears('🛒 Корзина', (ctx) => ctx.reply('Корзина пока в разработке. Скоро добавим!', backMenu()));
+bot.hears('ℹ️ Помощь', (ctx) => ctx.reply('Отправьте VIN (17 симв.) или артикул OEM. Либо задайте вопрос GPT.', backMenu()));
+bot.hears('⬅️ В меню', (ctx) => ctx.reply('Главное меню:', mainMenu()));
+
+// Инлайн
+bot.on('callback_query', handleCallback);
+
+// Текст → сначала попытка обработать флоу, иначе GPT
 bot.on('text', async (ctx) => {
-  const txt = (ctx.message?.text || '').trim();
-  try {
-    // Примитивная ветка OEM: если строка похожа на артикул (буквы+цифры, 3+ символа)
-    if (/^[A-Za-z0-9._-]{3,}$/.test(txt)) {
-      try {
-        const p = await partByOEM(txt);
-        if (p) {
-          await ctx.reply(`Карточка по OEM ${txt} (демо):\n` + JSON.stringify(p).slice(0, 3500));
-          return;
-        }
-      } catch (e) {
-        // тихо падаем в GPT, если Laximo не настроен
-      }
-    }
-
-    const q = normalizeInput(txt);
-    const r = await client.responses.create({
-      model: 'gpt-5-mini',
-      input: `Отвечай кратко и по делу. Вопрос: ${q}`
-    });
-    await ctx.reply((r.output_text || '').slice(0, 4000));
-  } catch (err) {
-    console.error(err);
-    await ctx.reply('Упс, произошла ошибка. Попробуйте ещё раз.');
-  }
+  const handled = await handleUserText(ctx);
+  if (handled) return;
+  const r = await client.responses.create({
+    model: 'gpt-5-mini',
+    input: `Отвечай кратко и по делу. Вопрос: ${ctx.message.text}`
+  });
+  await ctx.reply((r.output_text || '').slice(0, 4000), mainMenu());
 });
 
 bot.launch();
-console.log('✅ Bot started (long-polling)');
+console.log('✅ Bot started (меню подключено)');
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));

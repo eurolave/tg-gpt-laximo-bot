@@ -2,42 +2,47 @@ import 'dotenv/config';
 import express from 'express';
 import { Telegraf } from 'telegraf';
 import OpenAI from 'openai';
-import { normalizeInput } from './utils.js';
-import { partByOEM } from './clients/laximo.js';
+import { handleUserText, handleCallback, startFlow } from '../core/orchestrator.js';
+import { mainMenu, backMenu } from './keyboards.js';
 
+const app = express();
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+// Команды и меню
+bot.command('menu', (ctx) => ctx.reply('Главное меню:', mainMenu()));
+bot.command('vin', startFlow('vin_flow'));
+bot.command('oem', startFlow('oem_flow'));
+bot.command('help', (ctx) => ctx.reply('Я помогу подобрать детали по VIN/OEM и отвечу на вопросы GPT.', backMenu()));
+
+bot.hears('🔎 Подбор по VIN', startFlow('vin_flow'));
+bot.hears('🧩 Поиск по OEM', startFlow('oem_flow'));
+bot.hears('🤖 Вопрос к GPT', (ctx) => ctx.reply('Напишите вопрос для GPT:', backMenu()));
+bot.hears('🛒 Корзина', (ctx) => ctx.reply('Корзина пока в разработке. Скоро добавим!', backMenu()));
+bot.hears('ℹ️ Помощь', (ctx) => ctx.reply('Отправьте VIN (17 симв.) или артикул OEM. Либо задайте вопрос GPT.', backMenu()));
+bot.hears('⬅️ В меню', (ctx) => ctx.reply('Главное меню:', mainMenu()));
+
+// Инлайн-кнопки
+bot.on('callback_query', handleCallback);
+
+// Текст
 bot.on('text', async (ctx) => {
-  const txt = (ctx.message?.text || '').trim();
-  try {
-    if (/^[A-Za-z0-9._-]{3,}$/.test(txt)) {
-      try {
-        const p = await partByOEM(txt);
-        if (p) {
-          await ctx.reply(`Карточка по OEM ${txt} (демо):\n` + JSON.stringify(p).slice(0, 3500));
-          return;
-        }
-      } catch (e) {}
-    }
-    const q = normalizeInput(txt);
-    const r = await client.responses.create({
-      model: 'gpt-5-mini',
-      input: `Отвечай кратко и по делу. Вопрос: ${q}`
-    });
-    await ctx.reply((r.output_text || '').slice(0, 4000));
-  } catch (err) {
-    console.error(err);
-    await ctx.reply('Упс, ошибка. Попробуйте ещё раз.');
-  }
+  const handled = await handleUserText(ctx);
+  if (handled) return;
+  const r = await client.responses.create({
+    model: 'gpt-5-mini',
+    input: `Отвечай кратко и по делу. Вопрос: ${ctx.message.text}`
+  });
+  await ctx.reply((r.output_text || '').slice(0, 4000), mainMenu());
 });
 
-const app = express();
 app.use(express.json());
+
+// health
+app.get('/health', (req, res) => res.send('OK'));
 
 const secret = process.env.WEBHOOK_SECRET || 'tg';
 const path = `/tg/${secret}`;
-
 app.use(path, bot.webhookCallback(path));
 
 const port = Number(process.env.PORT) || 3000;
