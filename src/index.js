@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { Telegraf } from 'telegraf';
 import OpenAI from 'openai';
 import { handleUserText, handleCallback, startFlow } from './core/orchestrator.js';
-import { mainMenu, backMenu } from './keyboards.js';
+import { mainMenu, backMenu } from './bot/keyboards.js';
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
