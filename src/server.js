@@ -3,7 +3,7 @@ import express from 'express';
 import { Telegraf } from 'telegraf';
 import OpenAI from 'openai';
 import { handleUserText, handleCallback, startFlow } from './core/orchestrator.js';
-import { mainMenu, backMenu } from './keyboards.js';
+import { mainMenu, backMenu } from './bot/keyboards.js';
 
 const app = express();
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
