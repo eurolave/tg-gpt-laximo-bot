@@ -1,0 +1,1 @@
+export function detectIntent(t){return 'QUESTION';}

@@ -1,0 +1,37 @@
+id: oem_flow
+entry: ask_oem
+states:
+  ask_oem:
+    prompt: "Введите артикул/OEM (3+ символа)."
+    expect: "oem"
+    validate:
+      regex: "^[A-Za-z0-9._-]{3,}$"
+      on_fail: "Похоже, это не артикул. Попробуйте ещё раз."
+    next: fetch_part
+
+  fetch_part:
+    action: "getPartByOEM"
+    loading: "Ищу по OEM..."
+    on_error: "Не нашёл по этому номеру. Проверьте и попробуйте ещё раз."
+    next: show_part
+
+  show_part:
+    render: "partCardWithButtons"
+    expect: "callback:oem_action"
+    branches:
+      - when: "equals('analogs')"
+        next: show_crosses
+      - when: "equals('cart')"
+        next: add_to_cart
+
+  show_crosses:
+    action: "getCrossesByOEM"
+    loading: "Ищу аналоги..."
+    on_error: "Не удалось получить аналоги."
+    render: "crossesList"
+    next: show_part
+
+  add_to_cart:
+    action: "addToCart"
+    render: "cartConfirm"
+    next: show_part

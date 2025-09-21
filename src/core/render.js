@@ -1,0 +1,1 @@
+export async function renderByName(name,ctx,session){ await ctx.reply('Demo render '+name); }
