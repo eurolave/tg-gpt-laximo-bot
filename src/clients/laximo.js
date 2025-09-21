@@ -129,4 +129,6 @@ export async function crossesByOEM(oem) {
     name:  String(c?.name ?? c?.title ?? '')
   })).filter(c => c.oem);
   return { crosses: list };
+
+  export { findVehicleByVIN as searchByVIN, listPartsByUnit as partsByAssembly };
 }
