@@ -1,0 +1,1 @@
+Use this file as src/clients/laximo.js and set LAXIMO_BASE_URL to your PHP service base URL.

@@ -1,191 +1,91 @@
 // src/clients/laximo.js
-// SOAP-клиент для Laximo CAT (FindVehicle → ListUnits → ListDetailByUnit)
-// Экспорт под ваш текущий код: searchByVIN, partsByAssembly, partByOEM, crossesByOEM
+// Variant A: HTTP-клиент к нашему PHP-микросервису (GuayaquilLib), НЕ SOAP.
+// Экспорт под текущий код: searchByVIN, partsByAssembly, partByOEM, crossesByOEM
 
-import soap from 'soap';
 import axios from 'axios';
 
-const WSDL_URL = process.env.LAXIMO_WSDL_URL;              // …CatalogHttpSoap11Endpoint?wsdl
-const SOAP_ENDPOINT = process.env.LAXIMO_SOAP_ENDPOINT || ''; // опц.: …CatalogHttpSoap11Endpoint (без ?wsdl)
-const LOGIN = process.env.LAXIMO_LOGIN || '';
-const PASSWORD = process.env.LAXIMO_PASSWORD || '';
+const RAW_BASE = process.env.LAXIMO_BASE_URL || '';
+if (!RAW_BASE) console.warn('[LAXIMO] LAXIMO_BASE_URL is not set');
+const BASE = RAW_BASE.replace(/\/$/, '');
+
+const PATH_FINDVEHICLE    = process.env.LAXIMO_PATH_FINDVEHICLE    || '/cat/findVehicle';
+const PATH_LIST_UNITS     = process.env.LAXIMO_PATH_LIST_UNITS     || '/cat/listUnits';
+const PATH_LIST_PARTS     = process.env.LAXIMO_PATH_LIST_PARTS     || '/cat/listDetailByUnit';
+const PATH_PART_BY_OEM    = process.env.LAXIMO_PATH_PART_BY_OEM    || '/doc/partByOem';
+const PATH_CROSSES_BY_OEM = process.env.LAXIMO_PATH_CROSSES_BY_OEM || '/doc/crosses';
 
 const DEF_CATEGORY = process.env.LAXIMO_DEFAULT_CATEGORY ?? '0';
 const DEF_GROUP    = process.env.LAXIMO_DEFAULT_GROUP ?? '1';
 
-// (опц.) REST-доки для OEM/кроссов (если хотите использовать DOC через HTTP)
-const DOC_BASE = process.env.LAXIMO_DOC_BASE_URL || '';
-const PATH_PART_BY_OEM    = process.env.LAXIMO_PATH_PART_BY_OEM    || '/doc/partByOem';
-const PATH_CROSSES_BY_OEM = process.env.LAXIMO_PATH_CROSSES_BY_OEM || '/doc/crosses';
+function u(path) { return BASE + path; }
 
-// ===== SOAP client singleton =====
-let _client = null;
-async function getClient() {
-  if (_client) return _client;
-
-  if (!WSDL_URL) throw new Error('LAXIMO_WSDL_URL is not set');
-
-  const options = {
-    endpoint: SOAP_ENDPOINT || undefined,  // если нужно принудительно задать HTTP-адрес
-    wsdl_headers: { 'User-Agent': 'tg-gpt-laximo-bot/soap' },
-    wsdl_options: {}
-  };
-
-  const client = await soap.createClientAsync(WSDL_URL, options);
-
-  // Basic-авторизация (если нужна)
-  if (LOGIN && PASSWORD) {
-    client.setSecurity(new soap.BasicAuthSecurity(LOGIN, PASSWORD));
-  }
-
-  // Диагностика: какие методы доступны
+async function getJSON(url, params) {
   try {
-    const desc = client.describe();
-    console.log('ℹ️ Laximo SOAP methods:', JSON.stringify(desc, null, 2).slice(0, 2000));
-  } catch {}
-
-  _client = client;
-  return client;
-}
-
-// Вспомогательная: вызвать метод с перебором вариантов имён аргументов
-async function callSoap(methodName, variants) {
-  const client = await getClient();
-
-  // Попробуем вызвать метод разными наборами аргументов
-  let lastErr = null;
-  for (const args of variants) {
-    try {
-      const [res] = await client[`${methodName}Async`](args);
-      return res;
-    } catch (e) {
-      lastErr = e;
-      console.error(`[SOAP_CALL_FAIL] ${methodName} args=`, args, ' message=', e?.message);
-    }
+    const { data } = await axios.get(url, { params, timeout: 12000 });
+    return data;
+  } catch (e) {
+    console.error('[LAXIMO_HTTP_ERROR]', url, 'params=', params, 'status=', e.response?.status, 'data=', e.response?.data, 'msg=', e.message);
+    throw e;
   }
-  // Если ни один вариант не подошёл — бросаем последнюю ошибку
-  throw lastErr || new Error(`SOAP ${methodName} failed`);
 }
 
-// ===== Нормализация =====
-function normVehicle(raw) {
-  // В разных инсталляциях ответ может оборачиваться по-разному.
-  const v =
-    raw?.vehicle || raw?.row || (Array.isArray(raw) ? raw[0] : raw) ||
-    raw?.FindVehicleResult || raw?.return || raw;
-
+// Нормализация
+function normVehicle(v) {
+  if (!v || typeof v !== 'object') return { vehicleid: '', catalog: '', ssd: '', brand: '', name: '' };
   return {
-    vehicleid: String(v?.vehicleid ?? v?.VehicleId ?? v?.id ?? ''),
-    ssd:       String(v?.ssd ?? v?.SSD ?? ''),
-    catalog:   String(v?.catalog ?? v?.Catalog ?? ''),
-    brand:     String(v?.brand ?? v?.Brand ?? ''),
-    name:      String(v?.name ?? v?.Name ?? '')
+    vehicleid: String(v.vehicleid ?? ''),
+    catalog: String(v.catalog ?? ''),
+    ssd: String(v.ssd ?? ''),
+    brand: String(v.brand ?? ''),
+    name: String(v.name ?? '')
   };
 }
-
 function normUnits(raw) {
-  const list =
-    raw?.units || raw?.rows || raw?.ListUnitsResult || raw?.return ||
-    (Array.isArray(raw) ? raw : []);
-  const arr = Array.isArray(list) ? list : (list?.unit || list?.row || []);
-  return (Array.isArray(arr) ? arr : [arr]).map(r => ({
-    id:   String(r?.unitid ?? r?.id ?? r?.code ?? r?.UnitId ?? '').trim(),
-    name: String(r?.name ?? r?.Name ?? r?.title ?? '').trim()
-  })).filter(x => x.id);
+  const arr = Array.isArray(raw?.assemblies) ? raw.assemblies : (Array.isArray(raw) ? raw : []);
+  return arr.map(r => ({ id: String(r.id ?? r.unitid ?? r.code ?? ''), name: String(r.name ?? '') })).filter(r => r.id);
 }
-
 function normParts(raw) {
-  const list =
-    raw?.items || raw?.rows || raw?.ListDetailByUnitResult || raw?.return ||
-    (Array.isArray(raw) ? raw : []);
-  const arr = Array.isArray(list) ? list : (list?.item || list?.row || []);
-  return (Array.isArray(arr) ? arr : [arr]).map(p => ({
-    oem:   String(p?.oem ?? p?.OEM ?? p?.code ?? p?.partnumber ?? p?.PartNumber ?? '').trim(),
-    brand: String(p?.brand ?? p?.Brand ?? p?.maker ?? '').trim(),
-    name:  String(p?.name ?? p?.Name ?? p?.title ?? '').trim()
-  })).filter(p => p.oem);
+  const arr = Array.isArray(raw?.items) ? raw.items : (Array.isArray(raw) ? raw : []);
+  return arr.map(p => ({ oem: String(p.oem ?? p.code ?? p.partnumber ?? ''), brand: String(p.brand ?? p.maker ?? ''), name: String(p.name ?? p.title ?? '') })).filter(p => p.oem);
+}
+function normCrosses(raw) {
+  const arr = Array.isArray(raw?.crosses) ? raw.crosses : (Array.isArray(raw) ? raw : []);
+  return arr.map(c => ({ oem: String(c.oem ?? c.code ?? ''), brand: String(c.brand ?? c.maker ?? ''), name: String(c.name ?? c.title ?? '') })).filter(c => c.oem);
 }
 
-// ===== Временный контекст последнего VIN (для совместимости с текущим actions.js) =====
 let lastVinCtx = { catalog: '', ssd: '' };
 
-// ===== Публичные функции под ваш текущий код =====
-
-/**
- * searchByVIN(vin):
- * 1) SOAP FindVehicle(vin)
- * 2) SOAP ListUnits(catalog, ssd, category, group)
- * Возвращает: { vehicle, assemblies }
- * и запоминает {catalog, ssd} для partsByAssembly().
- */
+/** VIN → units */
 export async function searchByVIN(vin) {
-  // Поменяем регистр аргументов, если метод чувствителен
-  const fvRaw = await callSoap('FindVehicle', [{ vin }, { Vin: vin }, { VIN: vin }]);
-  const vehicle = normVehicle(fvRaw);
-
-  if (!vehicle?.catalog || !vehicle?.ssd) {
-    console.warn('FindVehicle returned no catalog/ssd:', fvRaw);
+  const fv = await getJSON(u(PATH_FINDVEHICLE), { vin });
+  const vehicle = normVehicle(fv);
+  if (!vehicle.catalog || !vehicle.ssd) {
+    console.warn('[LAXIMO] findVehicle returned no catalog/ssd:', fv);
     return { vehicle, assemblies: [] };
   }
-
   lastVinCtx = { catalog: vehicle.catalog, ssd: vehicle.ssd };
 
-  const luRaw = await callSoap('ListUnits', [
-    { catalog: vehicle.catalog, ssd: vehicle.ssd, category: DEF_CATEGORY, group: DEF_GROUP },
-    { Catalog: vehicle.catalog, ssd: vehicle.ssd, Category: DEF_CATEGORY, Group: DEF_GROUP },
-    { catalog: vehicle.catalog, SSD: vehicle.ssd, category: DEF_CATEGORY, group: DEF_GROUP }
-  ]);
-  const assemblies = normUnits(luRaw);
-
+  const units = await getJSON(u(PATH_LIST_UNITS), { catalog: vehicle.catalog, ssd: vehicle.ssd, category: DEF_CATEGORY, group: DEF_GROUP });
+  const assemblies = normUnits(units);
   return { vehicle, assemblies };
 }
 
-/**
- * partsByAssembly(assemblyId):
- * Использует {catalog, ssd} из последнего searchByVIN().
- * SOAP ListDetailByUnit(unitid, catalog, ssd)
- * Возвращает: { items }
- */
+/** unit → parts */
 export async function partsByAssembly(assemblyId) {
-  if (!lastVinCtx?.catalog || !lastVinCtx?.ssd) {
-    throw new Error('VIN context is empty — call searchByVIN() first');
-  }
-  const lduRaw = await callSoap('ListDetailByUnit', [
-    { unitid: assemblyId, catalog: lastVinCtx.catalog, ssd: lastVinCtx.ssd },
-    { UnitId: assemblyId, Catalog: lastVinCtx.catalog, SSD: lastVinCtx.ssd },
-    { unitId: assemblyId, catalog: lastVinCtx.catalog, ssd: lastVinCtx.ssd }
-  ]);
-  const items = normParts(lduRaw);
+  if (!lastVinCtx.catalog || !lastVinCtx.ssd) throw new Error('VIN context missing — call searchByVIN() first');
+  const data = await getJSON(u(PATH_LIST_PARTS), { catalog: lastVinCtx.catalog, ssd: lastVinCtx.ssd, unitid: assemblyId });
+  const items = normParts(data);
   return { items };
 }
 
-// ===== DOC (OEM) — опционально через REST (если настроили DOC_BASE) =====
-async function httpGet(base, path, params) {
-  const url = `${base}${path}`;
-  const { data } = await axios.get(url, { params, timeout: 12000 });
-  return data;
-}
-
+/** DOC (OEM) */
 export async function partByOEM(oem) {
-  if (!DOC_BASE) throw new Error('DOC REST is not configured (set LAXIMO_DOC_BASE_URL)');
-  const raw = await httpGet(DOC_BASE, PATH_PART_BY_OEM, { oem });
+  const raw = await getJSON(u(PATH_PART_BY_OEM), { oem });
   const p = Array.isArray(raw) ? raw[0] : raw;
   if (!p) return null;
-  return {
-    oem:   String(p?.oem ?? p?.code ?? oem),
-    brand: String(p?.brand ?? p?.maker ?? ''),
-    name:  String(p?.name ?? p?.title ?? '')
-  };
+  return { oem: String(p.oem ?? p.code ?? oem), brand: String(p.brand ?? p.maker ?? ''), name: String(p.name ?? p.title ?? '') };
 }
-
 export async function crossesByOEM(oem) {
-  if (!DOC_BASE) throw new Error('DOC REST is not configured (set LAXIMO_DOC_BASE_URL)');
-  const raw = await httpGet(DOC_BASE, PATH_CROSSES_BY_OEM, { oem });
-  const arr = Array.isArray(raw) ? raw : (raw?.crosses || raw?.rows || []);
-  const list = (Array.isArray(arr) ? arr : [arr]).map(c => ({
-    oem:   String(c?.oem ?? c?.code ?? ''),
-    brand: String(c?.brand ?? c?.maker ?? ''),
-    name:  String(c?.name ?? c?.title ?? '')
-  })).filter(c => c.oem);
-  return { crosses: list };
+  const raw = await getJSON(u(PATH_CROSSES_BY_OEM), { oem });
+  return { crosses: normCrosses(raw) };
 }
